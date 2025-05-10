@@ -56,7 +56,54 @@ def save_to_csv(data):
         csv_filename = f"license_plates_{today}.csv"
         csv_path = os.path.join(database_dir, csv_filename)
         
-        # Write to CSV
+        # Check if file already exists for today
+        if os.path.exists(csv_path):
+            print(f"CSV file for today already exists at {csv_path}")
+            # Append to existing file instead of creating a new one
+            existing_data = []
+            try:
+                with open(csv_path, 'r', newline='') as csvfile:
+                    reader = csv.DictReader(csvfile)
+                    for row in reader:
+                        existing_data.append(row)
+                
+                # Get the highest SN value
+                max_sn = 0
+                for item in existing_data:
+                    try:
+                        sn = int(item["SN"])
+                        if sn > max_sn:
+                            max_sn = sn
+                    except (ValueError, KeyError):
+                        pass
+                
+                # Update SN values for new data
+                for i, item in enumerate(data):
+                    item["sn"] = max_sn + i + 1
+                
+                # Append to existing file
+                with open(csv_path, 'a', newline='') as csvfile:
+                    fieldnames = ["SN", "vehicle_proprietor", "exacttime", "number_plate"]
+                    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                    
+                    for item in data:
+                        # Convert keys to match the fieldnames
+                        row = {
+                            "SN": item["sn"],
+                            "vehicle_proprietor": item["vehicle_proprietor"],
+                            "exacttime": item["exacttime"],
+                            "number_plate": item["number_plate"]
+                        }
+                        writer.writerow(row)
+                
+                print(f"Appended {len(data)} records to existing file {csv_path}")
+                return csv_path
+                
+            except Exception as e:
+                print(f"Error reading existing CSV file: {e}")
+                # If there's an error reading the existing file, we'll create a new one
+        
+        # Create a new file if it doesn't exist or couldn't be read
         with open(csv_path, 'w', newline='') as csvfile:
             fieldnames = ["SN", "vehicle_proprietor", "exacttime", "number_plate"]
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
@@ -72,7 +119,7 @@ def save_to_csv(data):
                 }
                 writer.writerow(row)
         
-        print(f"Saved {len(data)} records to {csv_path}")
+        print(f"Saved {len(data)} records to new file {csv_path}")
         return csv_path
     
     except Exception as e:

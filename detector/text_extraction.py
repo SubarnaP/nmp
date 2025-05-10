@@ -5,6 +5,7 @@ import glob
 import re
 from datetime import datetime
 import sys
+import numpy as np
 
 def extract_text_from_plates():
     """
@@ -17,8 +18,7 @@ def extract_text_from_plates():
     """
     # Define paths
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    plates_dir = os.path.join(base_dir, "datapreprocessing", "captured_plates")
-    
+    plates_dir = r"E:\My Files\Elytra Solutions\MadeshPradesh\nmp\datapreprocessing\captured_plates"
     # Check if directory exists
     if not os.path.exists(plates_dir):
         print(f"Error: Directory not found: {plates_dir}")
@@ -34,10 +34,11 @@ def extract_text_from_plates():
     print(f"Found {len(plate_images)} license plate images to process")
     
     # Configure pytesseract path (for Windows)
-    # Uncomment and set this if pytesseract is not in PATH
-    # pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+    # Set the path to Tesseract executable
+    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
     
     # Regular expression pattern for license plate numbers (adjust as needed)
+    # This pattern is for Indian license plates
     plate_pattern = re.compile(r'[A-Z]{2}\s*[0-9]{1,2}\s*[A-Z]{1,2}\s*[0-9]{4}')
     
     results = []
@@ -53,34 +54,75 @@ def extract_text_from_plates():
                 print(f"Failed to read image: {image_path}")
                 continue
             
+            # Resize image for better OCR (if too small)
+            height, width = img.shape[:2]
+            if width < 300:
+                scale_factor = 300 / width
+                img = cv2.resize(img, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_CUBIC)
+            
             # Convert to grayscale
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             
-            # Apply preprocessing to improve OCR accuracy
-            # Bilateral filter to reduce noise while keeping edges sharp
+            # Try multiple preprocessing techniques and combine results
+            plate_text = ""
+            confidence = 0
+            
+            # Method 1: Basic preprocessing
+            # Apply bilateral filter to reduce noise while keeping edges sharp
             bilateral = cv2.bilateralFilter(gray, 11, 17, 17)
             
             # Apply adaptive thresholding
-            thresh = cv2.adaptiveThreshold(
+            thresh1 = cv2.adaptiveThreshold(
                 bilateral, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
                 cv2.THRESH_BINARY_INV, 19, 9
             )
             
-            # Extract text using pytesseract
-            text = pytesseract.image_to_string(
-                thresh, 
-                config='--oem 1 --psm 7 -l eng'
-            )
+            # Method 2: Alternative preprocessing
+            # Apply Gaussian blur
+            blur = cv2.GaussianBlur(gray, (5, 5), 0)
             
-            # Clean the extracted text
-            text = text.strip().replace('\n', ' ').replace('\r', '')
+            # Apply Otsu's thresholding
+            _, thresh2 = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             
-            # Try to match the license plate pattern
-            match = plate_pattern.search(text)
-            if match:
-                plate_text = match.group(0).replace(' ', '')
-            else:
-                plate_text = text
+            # Method 3: Edge enhancement
+            # Apply Canny edge detection
+            edges = cv2.Canny(gray, 100, 200)
+            
+            # Dilate edges to connect broken characters
+            kernel = np.ones((3, 3), np.uint8)
+            dilated_edges = cv2.dilate(edges, kernel, iterations=1)
+            
+            # Try different OCR configurations on each preprocessed image
+            ocr_configs = [
+                '--oem 1 --psm 7 -l eng -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',  # License plate mode
+                '--oem 1 --psm 8 -l eng',  # Single word mode
+                '--oem 1 --psm 6 -l eng'   # Sparse text mode
+            ]
+            
+            # Process each preprocessing method with each OCR config
+            all_texts = []
+            
+            for thresh in [thresh1, thresh2, dilated_edges]:
+                for config in ocr_configs:
+                    text = pytesseract.image_to_string(thresh, config=config)
+                    text = text.strip().replace('\n', ' ').replace('\r', '')
+                    
+                    # Remove non-alphanumeric characters except spaces
+                    text = re.sub(r'[^A-Z0-9 ]', '', text.upper())
+                    
+                    if text:
+                        all_texts.append(text)
+            
+            # Try to match the license plate pattern in all extracted texts
+            for text in all_texts:
+                match = plate_pattern.search(text)
+                if match:
+                    plate_text = match.group(0).replace(' ', '')
+                    break
+            
+            # If no pattern match found, use the longest text
+            if not plate_text and all_texts:
+                plate_text = max(all_texts, key=len)
             
             # Extract timestamp and vehicle type from filename
             # Example filename: plate_car_0.95_20250511_015317_648163.jpg
@@ -119,6 +161,15 @@ def extract_text_from_plates():
             results.append(plate_info)
             print(f"Extracted: {plate_text}")
             
+            # Save debug images (optional)
+            debug_dir = os.path.join(os.path.dirname(plates_dir), "debug")
+            if not os.path.exists(debug_dir):
+                os.makedirs(debug_dir)
+                
+            cv2.imwrite(os.path.join(debug_dir, f"thresh1_{filename}"), thresh1)
+            cv2.imwrite(os.path.join(debug_dir, f"thresh2_{filename}"), thresh2)
+            cv2.imwrite(os.path.join(debug_dir, f"edges_{filename}"), dilated_edges)
+            
         except Exception as e:
             print(f"Error processing {filename}: {e}")
     
@@ -148,11 +199,15 @@ def send_to_data_module(plate_data):
             with open(data_path, 'w') as f:
                 f.write("""
 # License plate data module
+import os
+import csv
+from datetime import datetime
+
 plate_data = []
 
 def store_plate_data(data):
     \"\"\"
-    Store license plate data.
+    Store license plate data and save to CSV.
     
     Args:
         data (list): List of dictionaries containing plate information
@@ -161,10 +216,8 @@ def store_plate_data(data):
     plate_data = data
     print(f"Stored {len(data)} license plate records")
     
-    # You can add additional processing here, such as:
-    # - Saving to a database
-    # - Generating reports
-    # - Triggering notifications
+    # Save to CSV file
+    save_to_csv(data)
     
     return True
 
@@ -176,6 +229,54 @@ def get_plate_data():
         list: List of dictionaries containing plate information
     \"\"\"
     return plate_data
+
+def save_to_csv(data):
+    \"\"\"
+    Save the plate data to a CSV file.
+    
+    Args:
+        data (list): List of dictionaries containing plate information
+    \"\"\"
+    if not data:
+        print("No data to save")
+        return None
+    
+    try:
+        # Get the database directory
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        database_dir = os.path.join(base_dir, "database")
+        
+        # Create directory if it doesn't exist
+        if not os.path.exists(database_dir):
+            os.makedirs(database_dir)
+        
+        # Generate filename with today's date
+        today = datetime.now().strftime("%Y-%m-%d")
+        csv_filename = f"license_plates_{today}.csv"
+        csv_path = os.path.join(database_dir, csv_filename)
+        
+        # Write to CSV
+        with open(csv_path, 'w', newline='') as csvfile:
+            fieldnames = ["SN", "vehicle_proprietor", "exacttime", "number_plate"]
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            
+            writer.writeheader()
+            for item in data:
+                # Convert keys to match the fieldnames
+                row = {
+                    "SN": item["sn"],
+                    "vehicle_proprietor": item["vehicle_proprietor"],
+                    "exacttime": item["exacttime"],
+                    "number_plate": item["number_plate"]
+                }
+                writer.writerow(row)
+        
+        print(f"Saved {len(data)} records to {csv_path}")
+        return csv_path
+    
+    except Exception as e:
+        print(f"Error saving to CSV: {e}")
+        return None
 """)
         
         # Add the detector directory to the Python path
