@@ -1,0 +1,4 @@
+venv/
+captured_vehicles/
+datapreprocessing/captured_vehicles/
+haarcascade_russian_plate_number.xml
