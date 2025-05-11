@@ -303,3 +303,4 @@ if __name__ == "__main__":
     print("License Plate Text Extractor")
     plate_data = extract_text_from_plates()
     print(f"Processed {len(plate_data)} license plates")
+    print(plate_data)
